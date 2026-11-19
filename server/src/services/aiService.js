@@ -7,7 +7,7 @@
 const {
   QUESTION_BANK,
   evaluateAnswerStrictly,
-  getQuestionData,
+  getDynamicQuestion,
 } = require('./evaluationEngine');
 
 // Helper to call Google Gemini API with JSON response enforcement
@@ -59,6 +59,58 @@ async function callGemini(prompt, systemInstruction = '') {
   return JSON.parse(textOutput);
 }
 
+// Helper to call OpenAI API with JSON response enforcement
+async function callOpenAI(prompt, systemInstruction = '') {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    return null;
+  }
+
+  const messages = [];
+  if (systemInstruction) {
+    messages.push({ role: 'system', content: systemInstruction });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey.trim()}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI API Error [${response.status}]: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const textOutput = data.choices?.[0]?.message?.content;
+  if (!textOutput) {
+    throw new Error('Empty response received from OpenAI API');
+  }
+
+  return JSON.parse(textOutput);
+}
+
+// Unified LLM Caller
+async function callLLM(prompt, systemInstruction = '') {
+  if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
+    return callGemini(prompt, systemInstruction);
+  }
+  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim()) {
+    return callOpenAI(prompt, systemInstruction);
+  }
+  return null;
+}
+
 /**
  * Generate a technical interview question
  */
@@ -69,24 +121,39 @@ async function generateQuestion({
   questionNumber = 1,
   totalQuestions = 5,
   previousQuestions = [],
+  pastAskedQuestions = [],
+  resumeSnapshot = null,
+  interviewType = 'Mixed',
 }) {
-  const questionMeta = getQuestionData(category, difficulty, questionNumber - 1, previousQuestions);
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
+  const questionMeta = getDynamicQuestion({
+    category,
+    difficulty,
+    questionIndex: questionNumber - 1,
+    previousQuestions,
+    pastAskedQuestions,
+    resumeSnapshot,
+    interviewType,
+  });
+  const hasLLMKey = Boolean(
+    (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) ||
+    (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim())
+  );
 
-  if (hasGeminiKey) {
+  if (hasLLMKey) {
     try {
+      const allBlacklisted = [...previousQuestions, ...pastAskedQuestions].filter(Boolean);
       const prompt = `
 You are a Staff Technical Interviewer conducting a realistic interview in ${category} (${difficulty} difficulty, candidate level: ${experienceLevel}).
 Generate Question #${questionNumber} of ${totalQuestions}.
 
-Do NOT repeat any of these previously asked questions:
-${previousQuestions.map((q, idx) => `${idx + 1}. ${q}`).join('\n') || 'None'}
+Strict Rule: Do NOT repeat or paraphrase any of these questions already asked to this candidate:
+${allBlacklisted.map((q, idx) => `${idx + 1}. ${q}`).join('\n') || 'None'}
 
-Topic inspiration: ${questionMeta.question}
+Topic focus inspiration: ${questionMeta.question}
 
 Return strict JSON:
 {
-  "question": "The comprehensive technical question",
+  "question": "The fresh, non-repeating technical question",
   "category": "${category}",
   "difficulty": "${difficulty}",
   "expectedAnswer": "Authoritative complete technical answer expected",
@@ -95,7 +162,7 @@ Return strict JSON:
 }
 `;
 
-      const aiData = await callGemini(prompt);
+      const aiData = await callLLM(prompt);
       if (aiData && aiData.question) {
         return {
           question: aiData.question,
@@ -109,13 +176,13 @@ Return strict JSON:
         };
       }
     } catch (err) {
-      console.warn('[Gemini Question Gen Warning]:', err.message);
+      console.warn('[LLM Question Gen Warning]:', err.message);
     }
   }
 
   return {
     ...questionMeta,
-    isLiveAi: hasGeminiKey,
+    isLiveAi: hasLLMKey,
   };
 }
 
@@ -131,9 +198,12 @@ async function evaluateAnswer({
   essentialConcepts = [],
   misconceptions = [],
 }) {
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
+  const hasLLMKey = Boolean(
+    (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) ||
+    (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim())
+  );
 
-  if (hasGeminiKey) {
+  if (hasLLMKey) {
     try {
       const prompt = `
 You are a strict, objective senior technical interviewer evaluating a candidate's answer.
@@ -189,7 +259,7 @@ Return JSON with exact schema:
 }
 `;
 
-      const aiEval = await callGemini(prompt);
+      const aiEval = await callLLM(prompt);
       if (
         aiEval &&
         ['correct', 'partially_correct', 'incorrect'].includes(aiEval.status) &&
@@ -202,7 +272,7 @@ Return JSON with exact schema:
         };
       }
     } catch (err) {
-      console.warn('[Gemini Evaluation Fallback to Strict Rubric]:', err.message);
+      console.warn('[LLM Evaluation Fallback to Strict Rubric]:', err.message);
     }
   }
 
@@ -243,9 +313,11 @@ async function generateConversationalVoiceTurn({
 
   let spokenScript = '';
   if (isFinalQuestion) {
-    spokenScript = `${conversationalFeedback} That concludes our technical round for today. I am compiling your comprehensive performance report now. Great job working through these problems!`;
-  } else {
+    spokenScript = `${conversationalFeedback} That concludes our technical round for today. You can now click Finish Interview to view your comprehensive performance report. Great work!`;
+  } else if (nextQuestion && nextQuestion.question) {
     spokenScript = `${conversationalFeedback} Now, let's explore our next area: ${nextQuestion.question}`;
+  } else {
+    spokenScript = `${conversationalFeedback} Whenever you are ready, please click Next Question to proceed.`;
   }
 
   return {

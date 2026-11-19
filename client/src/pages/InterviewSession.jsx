@@ -18,13 +18,29 @@ export default function InterviewSession() {
   const [validationError, setValidationError] = useState('');
   const [secondsElapsed, setSecondsElapsed] = useState(0);
 
-  // Timer for active question
+  const [remainingSeconds, setRemainingSeconds] = useState(900);
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+
+  // Countdown timer based on persisted deadline
   useEffect(() => {
-    const timer = setInterval(() => {
-      setSecondsElapsed((prev) => prev + 1);
-    }, 1000);
+    if (!interview || !interview.deadline || interview.status === 'completed') return;
+
+    const calcRemaining = () => {
+      const diffMs = new Date(interview.deadline).getTime() - Date.now();
+      const secs = Math.max(0, Math.floor(diffMs / 1000));
+      setRemainingSeconds(secs);
+
+      if (secs === 0 && interview.status === 'in_progress') {
+        authFetch(`/api/interviews/${id}/finish`, { method: 'POST' }).finally(() => {
+          navigate(`/interview/report/${id}`);
+        });
+      }
+    };
+
+    calcRemaining();
+    const timer = setInterval(calcRemaining, 1000);
     return () => clearInterval(timer);
-  }, [currentQuestion]);
+  }, [interview?.deadline, interview?.status]);
 
   // Load session from backend
   useEffect(() => {
@@ -123,22 +139,74 @@ export default function InterviewSession() {
     }
   };
 
-  const handleProceedNext = () => {
-    if (interview?.status === 'completed') {
+  const handleProceedNext = async () => {
+    const isFinal = (currentQuestion?.questionId || 1) >= (interview?.totalQuestions || 5);
+    if (interview?.status === 'completed' || isFinal) {
       navigate(`/interview/report/${id}`);
       return;
     }
 
-    if (interview?.nextQ) {
-      setCurrentQuestion(interview.nextQ);
+    try {
+      setIsSubmitting(true);
+      const res = await authFetch(`/api/interviews/${id}/next-question`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to load next question.');
+      }
+
+      if (data.data?.isCompleted) {
+        navigate(`/interview/report/${id}`);
+        return;
+      }
+
+      const nextQ = data.data?.nextQuestion;
+      setCurrentQuestion(nextQ);
       setUserAnswer('');
       setEvaluationResult(null);
       setSecondsElapsed(0);
-      setInterview((prev) => {
-        const updated = { ...prev };
-        delete updated.nextQ;
-        return updated;
+      setInterview((prev) => ({
+        ...prev,
+        currentQuestionIndex: data.data?.currentQuestionIndex,
+      }));
+    } catch (err) {
+      setErrorMsg(err.message || 'Failed to advance to next question.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSkipQuestion = async () => {
+    setShowSkipConfirm(false);
+    try {
+      setIsSubmitting(true);
+      const res = await authFetch(`/api/interviews/${id}/skip-question`, {
+        method: 'POST',
       });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to skip question.');
+      }
+
+      if (data.data?.isCompleted) {
+        navigate(`/interview/report/${id}`);
+        return;
+      }
+
+      const nextQ = data.data?.nextQuestion;
+      setCurrentQuestion(nextQ);
+      setUserAnswer('');
+      setEvaluationResult(null);
+      setSecondsElapsed(0);
+      setInterview((prev) => ({
+        ...prev,
+        currentQuestionIndex: data.data?.currentQuestionIndex,
+      }));
+    } catch (err) {
+      setErrorMsg(err.message || 'Error skipping question.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -204,10 +272,18 @@ export default function InterviewSession() {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* Live Timer */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs font-mono">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              <span className="text-slate-300">{formatTimer(secondsElapsed)}</span>
+            {/* Live Countdown Timer */}
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono font-semibold ${
+                remainingSeconds <= 60
+                  ? 'bg-red-950/80 border-red-500 text-red-300 animate-pulse'
+                  : remainingSeconds <= 300
+                  ? 'bg-amber-950/80 border-amber-500 text-amber-300'
+                  : 'bg-slate-900 border-slate-800 text-cyan-400'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${remainingSeconds <= 60 ? 'bg-red-400' : 'bg-cyan-400'} animate-pulse`} />
+              <span>⏱ {formatTimer(remainingSeconds)}</span>
             </div>
 
             <button
@@ -339,11 +415,21 @@ export default function InterviewSession() {
                 AI will evaluate Technical Accuracy, Concept Depth, Completeness, and Clarity.
               </span>
 
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full sm:w-auto px-8 py-3.5 rounded-xl text-sm font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-600/30 transition-all hover:scale-105 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowSkipConfirm(true)}
+                  disabled={isSubmitting}
+                  className="px-5 py-3.5 rounded-xl text-xs font-semibold border border-slate-700 hover:border-red-500/50 hover:bg-red-950/40 text-slate-400 hover:text-red-300 transition"
+                >
+                  Skip Question
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl text-sm font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-600/30 transition-all hover:scale-105 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
                 {isSubmitting ? (
                   <>
                     <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
@@ -361,6 +447,7 @@ export default function InterviewSession() {
                   </>
                 )}
               </button>
+            </div>
             </div>
           </form>
         ) : (
@@ -500,6 +587,36 @@ export default function InterviewSession() {
           </div>
         )}
       </main>
+      {/* Skip Confirmation Modal */}
+      {showSkipConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-sm w-full shadow-2xl space-y-4 text-center">
+            <div className="w-10 h-10 rounded-full bg-amber-950/80 border border-amber-500/40 flex items-center justify-center text-amber-400 mx-auto">
+              ⚠️
+            </div>
+            <h3 className="text-base font-bold text-white">Skip Question #{currentQNum}?</h3>
+            <p className="text-xs text-slate-400">
+              Skipping will award 0 marks for this question and advance to the next topic.
+            </p>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSkipConfirm(false)}
+                className="px-4 py-2 rounded-xl border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSkipQuestion}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold shadow-md shadow-amber-600/30"
+              >
+                Yes, Skip Question
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

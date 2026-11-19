@@ -39,6 +39,8 @@ const questionItemSchema = new mongoose.Schema({
   userAnswer: { type: String, default: '' },
   selectedOptionIndex: { type: Number },
   isFollowUp: { type: Boolean, default: false },
+  isSkipped: { type: Boolean, default: false },
+  status: { type: String, enum: ['unanswered', 'answered', 'skipped'], default: 'unanswered' },
   evaluation: { type: evaluationSchema, default: null },
   answeredAt: { type: Date },
 });
@@ -51,30 +53,51 @@ const interviewSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    interviewType: {
+      type: String,
+      enum: ['general', 'resume'],
+      default: 'general',
+      index: true,
+    },
+    resumeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Resume',
+      default: null,
+    },
+    resumeSnapshot: {
+      technicalSkills: [{ type: String }],
+      projects: [
+        {
+          title: { type: String },
+          technologies: [{ type: String }],
+          description: { type: String },
+        },
+      ],
+      estimatedExperienceLevel: { type: String },
+    },
+    durationMinutes: {
+      type: Number,
+      enum: [15, 30, 45],
+      default: 15,
+    },
+    startTime: {
+      type: Date,
+      default: Date.now,
+    },
+    deadline: {
+      type: Date,
+    },
+    askedQuestionTexts: [{ type: String }],
     mode: {
       type: String,
-      enum: ['exam', 'voice'],
+      enum: ['exam', 'voice', 'video'],
       default: 'exam',
       required: true,
     },
     category: {
       type: String,
       required: true,
-      enum: [
-        'HTML',
-        'CSS',
-        'JavaScript',
-        'React.js',
-        'Node.js',
-        'Express.js',
-        'MongoDB',
-        'MERN Stack',
-        'Java',
-        'HR Interview',
-        'Behavioral Interview',
-        // Backward compatibility
-        'Java & Spring Boot',
-      ],
+      default: 'JavaScript',
     },
     difficulty: {
       type: String,

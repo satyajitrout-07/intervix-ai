@@ -237,10 +237,18 @@ export function AuthProvider({ children }) {
     }
 
     const headers = {
-      'Content-Type': 'application/json',
       Accept: 'application/json',
       ...(options.headers || {}),
     };
+
+    // If body is FormData, do NOT set Content-Type header so the browser sets multipart boundary
+    if (!(options.body instanceof FormData)) {
+      if (!headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+    } else {
+      delete headers['Content-Type'];
+    }
 
     if (activeToken) {
       headers.Authorization = `Bearer ${activeToken}`;
