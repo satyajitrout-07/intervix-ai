@@ -95,13 +95,9 @@ export default function ResumeUpload() {
       const formData = new FormData();
       formData.append('resumeFile', selectedFile);
 
-      // Using raw fetch with Authorization header for FormData
-      const token = localStorage.getItem('intervix_auth_token');
-      const res = await fetch('/api/resume/upload', {
+      // Use authFetch which correctly reads the token and handles FormData
+      const res = await authFetch('/api/resume/upload', {
         method: 'POST',
-        headers: {
-          Authorization: token ? `Bearer ${token}` : '',
-        },
         body: formData,
       });
 

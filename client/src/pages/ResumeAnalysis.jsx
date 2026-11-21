@@ -29,6 +29,54 @@ import {
   Check,
 } from 'lucide-react';
 
+// Safe helper to format any education shape (string, object, array) into a human-readable display string
+function formatEducationDisplay(edu) {
+  if (!edu) return '';
+  if (typeof edu === 'string') return edu.trim();
+  if (Array.isArray(edu)) {
+    return edu
+      .map((e) => {
+        if (!e) return '';
+        if (typeof e === 'string') return e.trim();
+        const degree = (e.degree || '').trim();
+        const branch = (e.branch || '').trim();
+        const institution = (e.institution || '').trim();
+        const year = (e.year || '').trim();
+        let text = degree;
+        if (branch) {
+          if (text && !text.toLowerCase().includes(branch.toLowerCase())) {
+            text = `${text} in ${branch}`;
+          } else if (!text) {
+            text = branch;
+          }
+        }
+        if (institution) text = text ? `${text}, ${institution}` : institution;
+        if (year) text = text ? `${text} (${year})` : year;
+        return text;
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (typeof edu === 'object') {
+    const degree = (edu.degree || '').trim();
+    const branch = (edu.branch || '').trim();
+    const institution = (edu.institution || '').trim();
+    const year = (edu.year || '').trim();
+    let text = degree;
+    if (branch) {
+      if (text && !text.toLowerCase().includes(branch.toLowerCase())) {
+        text = `${text} in ${branch}`;
+      } else if (!text) {
+        text = branch;
+      }
+    }
+    if (institution) text = text ? `${text}, ${institution}` : institution;
+    if (year) text = text ? `${text} (${year})` : year;
+    return text;
+  }
+  return String(edu);
+}
+
 export default function ResumeAnalysis() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -109,7 +157,7 @@ export default function ResumeAnalysis() {
       // Initialize form with confirmedData or parsedData
       const conf = resDoc.confirmedData || resDoc.parsedData || {};
       setCandidateName(conf.candidateName || user?.name || 'Candidate');
-      setEducation(conf.education || 'B.Tech in Computer Science');
+      setEducation(formatEducationDisplay(conf.education || resDoc.parsedData?.education) || 'B.Tech in Computer Science');
       setExperienceLevel(conf.estimatedExperienceLevel || 'Junior');
       setSummary(conf.summary || '');
 

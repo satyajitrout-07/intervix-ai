@@ -149,55 +149,98 @@ Generate Question #${questionNumber} of ${totalQuestions}.
 Strict Rule: Do NOT repeat or paraphrase any of these questions already asked to this candidate:
 ${allBlacklisted.map((q, idx) => `${idx + 1}. ${q}`).join('\n') || 'None'}
 
-Topic focus inspiration: ${questionMeta.question}
+Resume Context:
+${
+  resumeSnapshot
+    ? `Skills: ${(resumeSnapshot.technicalSkills || []).slice(0, 10).join(', ')}. Projects: ${(resumeSnapshot.projects || [])
+        .map((p) => p.name)
+        .join(', ')}`
+    : 'No candidate resume uploaded.'
+}
 
-Return strict JSON:
+Respond ONLY with valid JSON in this schema:
 {
-  "question": "The fresh, non-repeating technical question",
+  "question": "Clear, technically deep question",
   "category": "${category}",
   "difficulty": "${difficulty}",
-  "expectedAnswer": "Authoritative complete technical answer expected",
+  "type": "descriptive",
+  "expectedAnswer": "Comprehensive reference answer covering core technical mechanisms",
   "essentialConcepts": ["concept1", "concept2", "concept3"],
-  "misconceptions": ["common mistake 1", "common mistake 2"]
+  "misconceptions": ["common fallacy 1", "common fallacy 2"]
 }
 `;
 
-      const aiData = await callLLM(prompt);
-      if (aiData && aiData.question) {
+      const aiGenerated = await callLLM(prompt);
+      if (
+        aiGenerated &&
+        aiGenerated.question &&
+        !allBlacklisted.some((b) => b.toLowerCase() === aiGenerated.question.toLowerCase())
+      ) {
         return {
-          question: aiData.question,
-          category,
-          difficulty,
-          type: 'descriptive',
-          expectedAnswer: aiData.expectedAnswer || questionMeta.expectedAnswer,
-          essentialConcepts: aiData.essentialConcepts || questionMeta.essentialConcepts,
-          misconceptions: aiData.misconceptions || questionMeta.misconceptions,
+          questionId: questionNumber,
+          ...aiGenerated,
           isLiveAi: true,
         };
       }
     } catch (err) {
-      console.warn('[LLM Question Gen Warning]:', err.message);
+      console.warn('[LLM Question Gen Fallback]:', err.message);
     }
   }
 
   return {
+    questionId: questionNumber,
     ...questionMeta,
-    isLiveAi: hasLLMKey,
+    isLiveAi: false,
   };
 }
 
 /**
- * Rigorously evaluate an answer submitted by the candidate
+ * Evaluates candidate answer with deep semantic understanding, Hinglish tolerance,
+ * and maintains interview memory/context across questions.
  */
-async function evaluateAnswer({
-  category = 'JavaScript',
+async function evaluateCandidateAnswer({
+  category = 'General Software Engineering',
   difficulty = 'Intermediate',
-  question,
-  userAnswer,
+  question = '',
+  candidateAnswer = '',
+  userAnswer = '',
   expectedAnswer = '',
   essentialConcepts = [],
   misconceptions = [],
+  candidateName = 'Candidate',
+  sessionHistory = [],
+  topic = '',
+  resumeContext = null,
 }) {
+  const answer = (candidateAnswer || userAnswer || '').trim();
+  const activeTopic = topic || category;
+
+  // 1. Trivial or empty answer guard
+  if (!answer || answer.split(/\s+/).filter(Boolean).length < 2) {
+    return {
+      result: 'needs_clarification',
+      status: 'needs_clarification',
+      score: 0,
+      accuracy: 'Needs Improvement',
+      technicalKnowledge: 'Needs Clarification',
+      feedback:
+        "No audible or written answer was captured. Please speak clearly into your microphone or use the Type Answer feature to explain your technical solution.",
+      strengths: [],
+      mistakes: ['No explanation provided.'],
+      correctExplanation: expectedAnswer || `A comprehensive answer for this topic should explain the underlying mechanism, syntax, and performance implications.`,
+      improvementTips: [
+        'Speak directly into your microphone in a quiet environment.',
+        'Structure your answer starting with definition, working mechanism, and practical example.',
+      ],
+      suggestedAnswer: expectedAnswer || 'Please provide a clear conceptual explanation.',
+      spokenResponse: `I didn't quite catch your answer to this question, ${candidateName}. Let's make sure your microphone is active, or feel free to type your response.`,
+      missingConcepts: essentialConcepts || [],
+      incorrectStatements: [],
+      isLiveAi: false,
+    };
+  }
+
+  // 2. Check if live LLM API is configured
   const hasLLMKey = Boolean(
     (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) ||
     (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim())
@@ -205,15 +248,27 @@ async function evaluateAnswer({
 
   if (hasLLMKey) {
     try {
-      const prompt = `
-You are a strict, objective senior technical interviewer evaluating a candidate's answer.
-NEVER award full marks based merely on keyword matching.
-DO NOT award marks if the answer is factually incorrect, irrelevant, or contains serious misconceptions.
-If the answer is empty or trivial, return score: 0 and status: "incorrect".
+      // Build interview context memory summary
+      const pastSummary = Array.isArray(sessionHistory) && sessionHistory.length > 0
+        ? sessionHistory
+            .map(
+              (item, idx) =>
+                `Q${idx + 1}: "${item.question}" -> Score: ${item.evaluation?.score ?? 'N/A'}/100, Result: ${
+                  item.evaluation?.result || item.evaluation?.status || 'N/A'
+                }`
+            )
+            .join('\n')
+        : 'First question of the session.';
 
-Context:
-- Category: ${category}
+      const prompt = `
+You are Elena, a Staff Technical Interviewer evaluating a candidate's verbal response in a real technical mock interview.
+
+Interview Context:
+- Topic / Track: ${activeTopic}
 - Difficulty: ${difficulty}
+- Candidate Name: ${candidateName}
+- Session History / Memory:
+${pastSummary}
 
 Question:
 "${question}"
@@ -221,71 +276,89 @@ Question:
 Reference Expected Answer:
 "${expectedAnswer}"
 
-Essential Concepts That Must Be Present:
+Essential Concepts to Look For:
 ${JSON.stringify(essentialConcepts)}
 
 Common Misconceptions to Penalize:
 ${JSON.stringify(misconceptions)}
 
-Candidate's Answer:
-"${userAnswer}"
+Candidate's Spoken Answer:
+"${answer}"
 
-Evaluation Rules:
-- status: "correct" (≥75% and all essential concepts addressed correctly), "partially_correct" (40-74% with some correct concepts), or "incorrect" (<40% or factually wrong).
-- score: 0 to 100
-- accuracy: 0 to 100 (50% weight)
-- conceptUnderstanding: 0 to 100 (25% weight)
-- completeness: 0 to 100 (15% weight)
-- clarity: 0 to 100 (10% weight)
+Evaluation Guidelines:
+1. SEMANTIC UNDERSTANDING: Understand the core meaning of the answer. Do NOT penalize the candidate for using different synonyms, conversational phrasing, or natural speech patterns.
+2. HINDI / HINGLISH TOLERANCE: Candidates may mix conversational Hindi/Hinglish (e.g., "state maintain karne ke liye use karte hain", "asynchronous function wait karta hai", "ye memory me store hota hai"). Evaluate the technical substance accurately.
+3. SCORING & RESULTS:
+   - "correct": score 75-100. Accurate technical understanding, core mechanisms addressed.
+   - "partially_correct": score 40-74. Shows valid concepts but missed nuances, edge cases, or gave an incomplete explanation.
+   - "incorrect": score 0-39. Factual errors, major misconceptions, or completely irrelevant.
+   - "needs_clarification": score 10-30. Answer is vague, off-topic, or asks for clarification.
+4. ACCURACY: One of ["High", "Good", "Moderate", "Low", "Needs Improvement"].
+5. TECHNICAL KNOWLEDGE: One of ["Strong", "Good", "Fair", "Developing", "Needs Clarification"].
+6. SPOKEN RESPONSE: Craft a warm, conversational spoken response (2-3 sentences) from Elena that acknowledges what they said, gives specific feedback, and encourages them. Address them by name.
 
-Return JSON with exact schema:
+Return valid JSON with EXACT schema:
 {
-  "status": "correct | partially_correct | incorrect",
+  "result": "correct" | "partially_correct" | "incorrect" | "needs_clarification",
   "score": (number 0-100),
-  "maxScore": 10,
-  "accuracy": (number 0-100),
-  "technicalAccuracy": (number 0-100),
-  "conceptUnderstanding": (number 0-100),
-  "completeness": (number 0-100),
-  "clarity": (number 0-100),
-  "missingConcepts": ["concept1"],
-  "incorrectStatements": ["misconception found"],
-  "feedback": "Strict feedback on what was correct and what was missing",
-  "referenceAnswer": "Crisp model answer",
-  "explanation": "Technical explanation of concepts",
-  "strengths": ["Clear strength"],
-  "weaknesses": ["Key weakness"],
-  "improvementTips": ["Concrete tip"]
+  "accuracy": "High" | "Good" | "Moderate" | "Low" | "Needs Improvement",
+  "technicalKnowledge": "Strong" | "Good" | "Fair" | "Developing" | "Needs Clarification",
+  "feedback": "Concise, professional evaluation feedback explaining what was correct and what was missing.",
+  "strengths": ["Clear strength 1", "Clear strength 2"],
+  "mistakes": ["Specific mistake or misconception identified"],
+  "correctExplanation": "Detailed, technically precise reference explanation.",
+  "improvementTips": ["Concrete actionable improvement tip 1", "Tip 2"],
+  "suggestedAnswer": "Exemplary model answer suitable for a senior engineer.",
+  "spokenResponse": "Elena's direct conversational feedback addressing candidate by name."
 }
 `;
 
       const aiEval = await callLLM(prompt);
       if (
         aiEval &&
-        ['correct', 'partially_correct', 'incorrect'].includes(aiEval.status) &&
+        ['correct', 'partially_correct', 'incorrect', 'needs_clarification'].includes(aiEval.result) &&
         typeof aiEval.score === 'number'
       ) {
+        const normalizedScore = Math.min(100, Math.max(0, Math.round(aiEval.score)));
         return {
-          ...aiEval,
-          score: Math.min(100, Math.max(0, Math.round(aiEval.score))),
+          result: aiEval.result,
+          status: aiEval.result, // backward compatibility
+          score: normalizedScore,
+          accuracy: aiEval.accuracy || (normalizedScore >= 75 ? 'Good' : normalizedScore >= 40 ? 'Moderate' : 'Low'),
+          technicalKnowledge: aiEval.technicalKnowledge || (normalizedScore >= 75 ? 'Strong' : normalizedScore >= 40 ? 'Fair' : 'Developing'),
+          feedback: aiEval.feedback || 'Answer evaluated.',
+          strengths: Array.isArray(aiEval.strengths) ? aiEval.strengths : [],
+          mistakes: Array.isArray(aiEval.mistakes) ? aiEval.mistakes : [],
+          correctExplanation: aiEval.correctExplanation || expectedAnswer,
+          improvementTips: Array.isArray(aiEval.improvementTips) ? aiEval.improvementTips : [],
+          suggestedAnswer: aiEval.suggestedAnswer || expectedAnswer,
+          spokenResponse: aiEval.spokenResponse || `Thank you, ${candidateName}. Your response has been evaluated.`,
           isLiveAi: true,
         };
       }
     } catch (err) {
-      console.warn('[LLM Evaluation Fallback to Strict Rubric]:', err.message);
+      console.warn('[LLM Candidate Answer Evaluation Fallback]:', err.message);
     }
   }
 
-  // Deterministic strict rubric evaluator
+  // 3. Deterministic semantic rubric evaluator with Hinglish normalization
   return evaluateAnswerStrictly({
-    category,
+    category: activeTopic,
     difficulty,
     question,
-    userAnswer,
+    userAnswer: answer,
     expectedAnswer,
     essentialConcepts,
     misconceptions,
+    candidateName,
   });
+}
+
+/**
+ * Backward compatibility wrapper around evaluateCandidateAnswer
+ */
+async function evaluateAnswer(params) {
+  return evaluateCandidateAnswer(params);
 }
 
 /**
@@ -300,24 +373,26 @@ async function generateConversationalVoiceTurn({
   nextQuestion,
   isFinalQuestion = false,
 }) {
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
+  const resultStatus = evaluation.result || evaluation.status || 'partially_correct';
 
   let conversationalFeedback = '';
-  if (evaluation.status === 'correct') {
-    conversationalFeedback = `Excellent breakdown, ${candidateName}. You covered the core principles accurately.`;
-  } else if (evaluation.status === 'partially_correct') {
-    conversationalFeedback = `Good effort, ${candidateName}. You caught some key ideas, but missed a few technical nuances like ${evaluation.missingConcepts?.[0] || 'edge-case handling'}.`;
+  if (resultStatus === 'correct') {
+    conversationalFeedback = evaluation.spokenResponse || `Excellent explanation, ${candidateName}! You covered the key technical mechanisms accurately.`;
+  } else if (resultStatus === 'partially_correct') {
+    conversationalFeedback = evaluation.spokenResponse || `Good attempt, ${candidateName}. You understood the main concept, though a few technical nuances were missing.`;
+  } else if (resultStatus === 'needs_clarification') {
+    conversationalFeedback = evaluation.spokenResponse || `I didn't quite capture a full answer there, ${candidateName}. Remember you can always elaborate or use the text answer feature.`;
   } else {
-    conversationalFeedback = `Thank you for sharing your perspective, ${candidateName}. Let's keep moving forward.`;
+    conversationalFeedback = evaluation.spokenResponse || `Thank you for sharing your thoughts, ${candidateName}. The core concept here differs slightly from your explanation.`;
   }
 
   let spokenScript = '';
   if (isFinalQuestion) {
-    spokenScript = `${conversationalFeedback} That concludes our technical round for today. You can now click Finish Interview to view your comprehensive performance report. Great work!`;
+    spokenScript = `${conversationalFeedback} That concludes our technical round for today. You can now click Finish Interview to view your comprehensive performance report. Outstanding work!`;
   } else if (nextQuestion && nextQuestion.question) {
-    spokenScript = `${conversationalFeedback} Now, let's explore our next area: ${nextQuestion.question}`;
+    spokenScript = `${conversationalFeedback} Now, let's move on to our next question: ${nextQuestion.question}`;
   } else {
-    spokenScript = `${conversationalFeedback} Whenever you are ready, please click Next Question to proceed.`;
+    spokenScript = `${conversationalFeedback} Whenever you are ready, please click Next Question to continue.`;
   }
 
   return {
@@ -352,31 +427,44 @@ async function generateFinalReport({
       missingConcepts: [],
       suggestedTopics: [],
       personalizedRecommendations: [],
-      summary: 'No evaluated questions found.',
+      summary: 'No questions answered.',
     };
   }
 
-  const scores = questionsWithEvaluations.map((q) => q.evaluation?.score || 0);
-  const sum = scores.reduce((acc, s) => acc + s, 0);
-  const overallScore = Math.round(sum / total);
-
-  const correctCount = questionsWithEvaluations.filter((q) => q.evaluation?.status === 'correct').length;
-  const partiallyCorrectCount = questionsWithEvaluations.filter((q) => q.evaluation?.status === 'partially_correct').length;
-  const incorrectCount = questionsWithEvaluations.filter((q) => q.evaluation?.status === 'incorrect').length;
-
-  const accuracies = questionsWithEvaluations.map((q) => q.evaluation?.accuracy || q.evaluation?.technicalAccuracy || 0);
-  const avgAccuracy = Math.round(accuracies.reduce((a, b) => a + b, 0) / total);
-
-  const clarities = questionsWithEvaluations.map((q) => q.evaluation?.clarity || 70);
-  const avgClarity = Math.round(clarities.reduce((a, b) => a + b, 0) / total);
-
-  // Collect missing concepts across all questions
+  let totalScore = 0;
+  let correctCount = 0;
+  let partiallyCorrectCount = 0;
+  let incorrectCount = 0;
+  let totalAccuracy = 0;
+  let totalClarity = 0;
   const allMissing = [];
+
   questionsWithEvaluations.forEach((q) => {
-    if (q.evaluation?.missingConcepts) {
-      allMissing.push(...q.evaluation.missingConcepts);
+    const evalData = q.evaluation || {};
+    const score = Number(evalData.score) || 0;
+    totalScore += score;
+
+    const res = evalData.result || evalData.status;
+    if (res === 'correct' || score >= 75) {
+      correctCount++;
+    } else if (res === 'partially_correct' || score >= 40) {
+      partiallyCorrectCount++;
+    } else {
+      incorrectCount++;
+    }
+
+    totalAccuracy += typeof evalData.accuracy === 'number' ? evalData.accuracy : score >= 75 ? 85 : score >= 40 ? 60 : 30;
+    totalClarity += Number(evalData.clarity) || (score >= 60 ? 80 : 50);
+
+    if (Array.isArray(evalData.missingConcepts)) {
+      evalData.missingConcepts.forEach((c) => allMissing.push(c));
     }
   });
+
+  const overallScore = Math.round(totalScore / total);
+  const avgAccuracy = Math.round(totalAccuracy / total);
+  const avgClarity = Math.round(totalClarity / total);
+
   const uniqueMissing = [...new Set(allMissing)].slice(0, 6);
 
   // Collect strong and weak topics
@@ -385,7 +473,8 @@ async function generateFinalReport({
 
   questionsWithEvaluations.forEach((q) => {
     const topic = q.topic || q.category || category;
-    if (q.evaluation?.status === 'correct') {
+    const res = q.evaluation?.result || q.evaluation?.status;
+    if (res === 'correct' || (q.evaluation?.score || 0) >= 75) {
       strongAreas.push(topic);
     } else {
       weakAreas.push(topic);
@@ -440,6 +529,7 @@ async function generateFinalReport({
 module.exports = {
   generateQuestion,
   evaluateAnswer,
+  evaluateCandidateAnswer,
   generateConversationalVoiceTurn,
   generateFinalReport,
 };

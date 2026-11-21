@@ -40,7 +40,6 @@ async function parseResponseSafely(res, defaultErrorMessage = 'Request failed.')
   }
 
   if (!data) {
-    // If response was 200/204 but had empty body
     return { success: true };
   }
 
@@ -70,18 +69,12 @@ export function AuthProvider({ children }) {
     const verifySession = async () => {
       const storedToken = localStorage.getItem('intervix_token');
 
-      // If no token exists, check if we have a cached user, or default to candidate session
       if (!storedToken) {
-        if (!user && isMounted) {
-          const defaultCandidate = {
-            id: '6af2db9215c4fee407733259',
-            name: 'Satyajit Rout',
-            email: 'satyajit.rout@intervix.ai',
-          };
-          setUser(defaultCandidate);
-          localStorage.setItem('intervix_user', JSON.stringify(defaultCandidate));
+        // No token: user is not logged in. Clear any stale user data.
+        if (isMounted) {
+          setUser(null);
+          setLoading(false);
         }
-        if (isMounted) setLoading(false);
         return;
       }
 
@@ -99,12 +92,12 @@ export function AuthProvider({ children }) {
             localStorage.setItem('intervix_user', JSON.stringify(data.user));
           }
         } else if (res.status === 401) {
-          // Token expired, log out cleanly
+          // Token expired — log out cleanly
           if (isMounted) logout();
         }
       } catch (err) {
         console.warn('[Session Verification Note]:', err.message);
-        // Do not discard stored local user on transient network failure
+        // Keep the stored user on transient network failure — do not force logout
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -206,34 +199,20 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('intervix_user');
   };
 
-  // Helper for authenticated API calls with safe response handling
+  /**
+   * Authenticated API helper with automatic JWT Bearer attachment.
+   * - Does NOT set Content-Type when body is FormData (browser sets multipart boundary).
+   * - Does NOT hardcode or inject any credentials automatically.
+   * - Throws and redirects on 401.
+   */
   const authFetch = async (url, options = {}) => {
-    let activeToken = token || localStorage.getItem('intervix_token');
+    const activeToken = token || localStorage.getItem('intervix_token');
 
-    // If still no token, attempt quick authentication for existing user
     if (!activeToken) {
-      try {
-        const res = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: 'satyajit.rout@intervix.ai',
-            password: 'Password@123',
-          }),
-        });
-        if (res.ok) {
-          const data = await parseResponseSafely(res);
-          if (data?.token) {
-            activeToken = data.token;
-            setToken(data.token);
-            setUser(data.user);
-            localStorage.setItem('intervix_token', data.token);
-            localStorage.setItem('intervix_user', JSON.stringify(data.user));
-          }
-        }
-      } catch (e) {
-        console.warn('[Quick auth fallback notice]:', e.message);
-      }
+      // Not authenticated — redirect to login
+      logout();
+      window.location.href = '/login';
+      throw new Error('Not authenticated. Please log in to continue.');
     }
 
     const headers = {
@@ -241,18 +220,16 @@ export function AuthProvider({ children }) {
       ...(options.headers || {}),
     };
 
-    // If body is FormData, do NOT set Content-Type header so the browser sets multipart boundary
-    if (!(options.body instanceof FormData)) {
+    // If body is FormData, remove Content-Type so browser sets the multipart boundary correctly
+    if (options.body instanceof FormData) {
+      delete headers['Content-Type'];
+    } else {
       if (!headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
-    } else {
-      delete headers['Content-Type'];
     }
 
-    if (activeToken) {
-      headers.Authorization = `Bearer ${activeToken}`;
-    }
+    headers.Authorization = `Bearer ${activeToken}`;
 
     let response;
     try {

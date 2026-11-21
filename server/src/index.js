@@ -3,6 +3,12 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
+const {
+  securityHeaders,
+  sanitizeNoSql,
+  apiLimiter,
+  authLimiter,
+} = require('./middleware/security');
 
 // Load environment variables
 dotenv.config();
@@ -13,29 +19,61 @@ const PORT = process.env.PORT || 5000;
 // Connect to Database
 connectDB();
 
-// Middlewares
+// 1. Security HTTP Headers
+app.use(securityHeaders);
+
+// 2. CORS configuration (allows frontend on localhost / 127.0.0.1 or configured CLIENT_URL)
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  process.env.CLIENT_URL,
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl) or matching whitelist
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('CORS policy: Not an authorized origin.'));
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   })
 );
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
 
-// Default JSON content-type header middleware
+// 3. Request body parsers with strict size limits
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// 4. NoSQL / MongoDB Operator Injection Sanitization
+app.use(sanitizeNoSql);
+
+// 5. Default JSON content-type header middleware
 app.use((req, res, next) => {
   res.setHeader('Content-Type', 'application/json');
   next();
 });
 
-// API Routes
+// 6. Global API Rate Limiter
+app.use('/api', apiLimiter);
+
+// 7. Strict Auth Rate Limiter for Login & Registration
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+
+// 8. API Routes (mounts both singular and plural interview paths for 100% compatibility)
+const interviewRoutes = require('./routes/interviewRoutes');
 app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/interviews', require('./routes/interviewRoutes'));
+app.use('/api/interviews', interviewRoutes);
+app.use('/api/interview', interviewRoutes); // Singular alias
 app.use('/api/resume', require('./routes/resumeRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
 
-// Health & Status check endpoint
+// 9. Health & Status check endpoint (never leaks secrets or database credentials)
+const startTime = Date.now();
 app.get('/api/health', (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
@@ -44,10 +82,10 @@ app.get('/api/health', (req, res) => {
   return res.status(200).json({
     status: 'healthy',
     service: 'INTERVIX AI Backend Engine',
+    uptimeSeconds: Math.floor((Date.now() - startTime) / 1000),
     timestamp: new Date().toISOString(),
     database: {
       status: dbStatus,
-      host: mongoose.connection.host || '127.0.0.1',
       name: mongoose.connection.name || 'intervix_ai',
     },
     llmIntegration: {
@@ -61,7 +99,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// 404 Route Handler - Always returns valid JSON
+// 10. 404 Route Handler - Always returns clean JSON
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -69,21 +107,58 @@ app.use((req, res) => {
   });
 });
 
-// Central Error Handler - Always returns valid JSON
+// 11. Central Error Handler - Never leaks stack traces in production
 app.use((err, req, res, next) => {
   console.error('[Unhandled Server Error]:', err.stack || err.message);
+  const isDev = process.env.NODE_ENV !== 'production';
+
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Internal Server Error',
+    ...(isDev && { errorDetails: err.message }),
   });
 });
 
-// Start Express Server
-const server = app.listen(PORT, () => {
+// 12. Start Express Server
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n======================================================`);
   console.log(`🚀 INTERVIX AI Server running at http://localhost:${PORT}`);
   console.log(`📡 Health Check: http://localhost:${PORT}/api/health`);
+  console.log(`🔒 Security headers, NoSQL filter & rate limits active.`);
   console.log(`======================================================\n`);
+});
+
+// 13. Graceful Shutdown
+function gracefulShutdown(signal) {
+  console.log(`\n[Server]: Received ${signal}. Shutting down gracefully...`);
+  server.close(async () => {
+    try {
+      await mongoose.connection.close(false);
+      console.log('[Server]: MongoDB connection closed successfully.');
+      process.exit(0);
+    } catch (dbErr) {
+      console.error('[Server Error]: Error during DB shutdown:', dbErr.message);
+      process.exit(1);
+    }
+  });
+
+  // Force exit after 10s if hung
+  setTimeout(() => {
+    console.error('[Server]: Could not close connections in time. Forcefully terminating.');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Process-level uncaught exception handling
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL UNCAUGHT EXCEPTION]:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.warn('[UNHANDLED PROMISE REJECTION]:', reason);
 });
 
 module.exports = app;

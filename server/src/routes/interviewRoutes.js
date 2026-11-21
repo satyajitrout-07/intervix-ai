@@ -5,6 +5,7 @@ const {
   startInterview,
   submitAnswer,
   processVideoTurn,
+  evaluateAnswerEndpoint,
   nextQuestion,
   skipQuestion,
   finishInterview,
@@ -25,6 +26,7 @@ const upload = multer({
 router.use(protect);
 
 router.post('/start', startInterview);
+router.post('/evaluate-answer', evaluateAnswerEndpoint);
 router.get('/history', getUserInterviews);
 router.get('/analytics', getInterviewAnalytics);
 router.post('/transcribe', upload.single('audioFile'), transcribeAudio);
@@ -32,6 +34,7 @@ router.post('/transcribe', upload.single('audioFile'), transcribeAudio);
 router.get('/:id', getInterviewById);
 router.post('/:id/answer', submitAnswer);
 router.post('/:id/video-turn', processVideoTurn);
+router.post('/:id/evaluate-answer', evaluateAnswerEndpoint);
 router.post('/:id/next-question', nextQuestion);
 router.post('/:id/skip-question', skipQuestion);
 router.post('/:id/finish', finishInterview);

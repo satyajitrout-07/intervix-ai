@@ -25,8 +25,12 @@ async function testAll() {
   console.log('Health Status:', health.status, health.data?.service, '| DB:', health.data?.database?.status);
 
   console.log('\n=== 2. Health Check via Vite Proxy (Client:5173 -> :5000) ===');
-  const viteProxy = await request({ hostname: 'localhost', port: 5173, path: '/api/health', method: 'GET' });
-  console.log('Vite /api/health Proxy Status:', viteProxy.status, viteProxy.data?.service);
+  try {
+    const viteProxy = await request({ hostname: 'localhost', port: 5173, path: '/api/health', method: 'GET' });
+    console.log('Vite /api/health Proxy Status:', viteProxy.status, viteProxy.data?.service);
+  } catch (proxyErr) {
+    console.log('Vite dev server not running on 5173; direct backend:5000 verified in step 1.');
+  }
 
   console.log('\n=== 3. Login User ===');
   const login = await request(

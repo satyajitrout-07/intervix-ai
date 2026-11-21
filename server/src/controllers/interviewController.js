@@ -308,7 +308,8 @@ const processVideoTurn = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { questionId, userAnswer } = req.body || {};
+    const { questionId, userAnswer, candidateAnswer } = req.body || {};
+    const answer = (candidateAnswer || userAnswer || '').trim();
 
     const interview = await Interview.findOne({ _id: id, userId: req.user._id });
     if (!interview) {
@@ -320,25 +321,33 @@ const processVideoTurn = async (req, res) => {
       return res.status(404).json({ success: false, message: `Question #${questionId} not found.` });
     }
 
-    // Evaluate candidate spoken answer strictly
-    const evaluation = await aiService.evaluateAnswer({
+    // Collect past questions in this interview for context memory
+    const sessionHistory = (interview.questions || []).filter(
+      (q) => q.status === 'answered' && q.evaluation
+    );
+
+    // Evaluate candidate spoken answer strictly with semantic understanding & Hinglish tolerance
+    const evaluation = await aiService.evaluateCandidateAnswer({
       category: interview.category,
       difficulty: interview.difficulty,
       question: currentQuestion.question,
-      userAnswer: userAnswer || '',
+      candidateAnswer: answer,
       expectedAnswer: currentQuestion.expectedAnswer,
       essentialConcepts: currentQuestion.essentialConcepts,
       misconceptions: currentQuestion.misconceptions,
+      candidateName: req.user.name || 'Candidate',
+      sessionHistory,
+      topic: currentQuestion.category || interview.category,
     });
 
-    currentQuestion.userAnswer = (userAnswer || '').trim();
+    currentQuestion.userAnswer = answer;
     currentQuestion.evaluation = evaluation;
     currentQuestion.status = 'answered';
     currentQuestion.answeredAt = new Date();
 
     interview.voiceSession.transcripts.push({
       speaker: 'user',
-      text: (userAnswer || '').trim() || '(No audible answer)',
+      text: answer || '(No audible answer)',
       timestamp: new Date(),
     });
 
@@ -349,7 +358,7 @@ const processVideoTurn = async (req, res) => {
       category: interview.category,
       candidateName: req.user.name || 'Candidate',
       question: currentQuestion.question,
-      userAnswer: userAnswer || '',
+      userAnswer: answer,
       evaluation,
       nextQuestion: null,
       isFinalQuestion: isFinal,
@@ -364,8 +373,12 @@ const processVideoTurn = async (req, res) => {
     await interview.save();
 
     return res.status(200).json({
+      status: 'success',
       success: true,
       message: 'Video turn processed.',
+      evaluation,
+      nextQuestion: null,
+      spokenScript: voiceTurn.spokenScript,
       data: {
         isCompleted: isFinal,
         evaluation,
@@ -378,8 +391,141 @@ const processVideoTurn = async (req, res) => {
   } catch (error) {
     console.error('[Process Video Turn Error]:', error);
     return res.status(500).json({
+      status: 'error',
       success: false,
       message: error.message || 'Failed to process turn.',
+    });
+  }
+};
+
+// @desc    Evaluate candidate answer with deep semantic understanding & context memory
+// @route   POST /api/interview/evaluate-answer
+// @route   POST /api/interviews/:id/evaluate-answer
+// @access  Private
+const evaluateAnswerEndpoint = async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+
+  try {
+    const interviewId = req.params.id || req.body.interviewId;
+    const {
+      questionId,
+      question: questionText,
+      candidateAnswer,
+      userAnswer,
+      expectedAnswer,
+      topic,
+      difficulty,
+      resumeContext,
+    } = req.body || {};
+
+    const rawAnswer = (candidateAnswer || userAnswer || '').trim();
+
+    let interview = null;
+    let currentQuestion = null;
+    let sessionHistory = [];
+
+    if (interviewId) {
+      interview = await Interview.findOne({ _id: interviewId, userId: req.user._id });
+      if (!interview) {
+        return res.status(404).json({
+          status: 'error',
+          success: false,
+          message: 'Interview session not found or does not belong to your account.',
+        });
+      }
+
+      // Collect session history for context memory
+      sessionHistory = (interview.questions || []).filter(
+        (q) => q.status === 'answered' && q.evaluation
+      );
+
+      if (questionId) {
+        currentQuestion = interview.questions.find((q) => q.questionId === Number(questionId));
+      } else if (questionText) {
+        currentQuestion = interview.questions.find((q) => q.question === questionText);
+      }
+    }
+
+    const category = topic || interview?.category || 'General Software Engineering';
+    const normDiff = difficulty || interview?.difficulty || 'Intermediate';
+    const activeQuestionText = questionText || currentQuestion?.question || 'Technical Question';
+    const activeExpected = expectedAnswer || currentQuestion?.expectedAnswer || '';
+    const essentialConcepts = currentQuestion?.essentialConcepts || [];
+    const misconceptions = currentQuestion?.misconceptions || [];
+
+    // Evaluate candidate spoken answer with LLM or strict semantic rubric
+    const evaluation = await aiService.evaluateCandidateAnswer({
+      category,
+      difficulty: normDiff,
+      question: activeQuestionText,
+      candidateAnswer: rawAnswer,
+      expectedAnswer: activeExpected,
+      essentialConcepts,
+      misconceptions,
+      candidateName: req.user.name || 'Candidate',
+      sessionHistory,
+      topic: category,
+      resumeContext,
+    });
+
+    const isFinal = currentQuestion && interview
+      ? currentQuestion.questionId >= interview.totalQuestions
+      : false;
+
+    // Generate conversational response from Elena
+    const voiceTurn = await aiService.generateConversationalVoiceTurn({
+      category,
+      candidateName: req.user.name || 'Candidate',
+      question: activeQuestionText,
+      userAnswer: rawAnswer,
+      evaluation,
+      nextQuestion: null,
+      isFinalQuestion: isFinal,
+    });
+
+    // If linked to an interview, save state to MongoDB
+    if (interview && currentQuestion) {
+      currentQuestion.userAnswer = rawAnswer;
+      currentQuestion.evaluation = evaluation;
+      currentQuestion.status = 'answered';
+      currentQuestion.answeredAt = new Date();
+
+      interview.voiceSession.transcripts.push({
+        speaker: 'user',
+        text: rawAnswer || '(No audible answer)',
+        timestamp: new Date(),
+      });
+
+      interview.voiceSession.transcripts.push({
+        speaker: 'ai',
+        text: voiceTurn.spokenScript,
+        timestamp: new Date(),
+      });
+
+      await interview.save();
+    }
+
+    return res.status(200).json({
+      status: 'success',
+      success: true,
+      message: 'Answer evaluated successfully.',
+      evaluation,
+      nextQuestion: null,
+      spokenScript: voiceTurn.spokenScript,
+      data: {
+        evaluation,
+        nextQuestion: null,
+        spokenScript: voiceTurn.spokenScript,
+        isCompleted: isFinal,
+        currentQuestion,
+      },
+    });
+  } catch (error) {
+    console.error('[Evaluate Answer Endpoint Error]:', error);
+    return res.status(500).json({
+      status: 'error',
+      success: false,
+      message: error.message || 'Failed to evaluate answer.',
     });
   }
 };
@@ -682,6 +828,7 @@ module.exports = {
   getInterviewById,
   submitAnswer,
   processVideoTurn,
+  evaluateAnswerEndpoint,
   nextQuestion,
   skipQuestion,
   finishInterview,

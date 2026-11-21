@@ -1,6 +1,12 @@
 const Resume = require('../models/Resume');
 const Interview = require('../models/Interview');
-const { parseResume, generatePreviewQuestions } = require('../services/resumeParser');
+const {
+  parseResume,
+  generatePreviewQuestions,
+  normalizeEducation,
+  formatEducationToString,
+  normalizeParsedData,
+} = require('../services/resumeParser');
 const aiService = require('../services/aiService');
 
 // @desc    Upload & analyze a resume (PDF/DOCX)
@@ -38,10 +44,14 @@ const uploadResume = async (req, res) => {
     // Parse resume text and extract structured information
     const { rawText, parsedData } = await parseResume(buffer, fileType);
 
-    // Initial confirmed data defaults
+    // Initial confirmed data defaults (education string formatted cleanly for display/confirmation)
+    const confirmedEducationStr = typeof parsedData.education === 'string'
+      ? parsedData.education.trim()
+      : formatEducationToString(parsedData.education);
+
     const confirmedData = {
       candidateName: parsedData.candidateName || req.user.name || 'Candidate',
-      education: parsedData.education || 'B.Tech in Computer Science',
+      education: confirmedEducationStr || 'B.Tech in Computer Science',
       estimatedExperienceLevel: parsedData.estimatedExperienceLevel || 'Junior',
       summary: parsedData.summary || '',
       categorizedSkills: parsedData.categorizedSkills,
@@ -193,7 +203,11 @@ const updateConfirmedProfile = async (req, res) => {
     }
 
     if (candidateName) resume.confirmedData.candidateName = candidateName.trim();
-    if (education !== undefined) resume.confirmedData.education = education.trim();
+    if (education !== undefined) {
+      resume.confirmedData.education = typeof education === 'string'
+        ? education.trim()
+        : formatEducationToString(education);
+    }
     if (estimatedExperienceLevel) resume.confirmedData.estimatedExperienceLevel = estimatedExperienceLevel;
     if (summary !== undefined) resume.confirmedData.summary = summary.trim();
 
@@ -296,9 +310,13 @@ const confirmAndStartInterview = async (req, res) => {
 
     // Apply any final confirmations submitted in request body
     if (req.body && req.body.confirmedData) {
+      const incoming = { ...req.body.confirmedData };
+      if (incoming.education !== undefined && typeof incoming.education !== 'string') {
+        incoming.education = formatEducationToString(incoming.education);
+      }
       resume.confirmedData = {
         ...resume.confirmedData,
-        ...req.body.confirmedData,
+        ...incoming,
       };
     }
 

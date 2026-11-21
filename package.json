@@ -4,10 +4,12 @@
   "private": true,
   "description": "INTERVIX AI - AI-Powered Mock Interview Platform. Practice. Improve. Get Hired.",
   "scripts": {
-    "dev": "npm --prefix client run dev",
+    "dev": "node scripts/start-all.js",
+    "dev:all": "node scripts/start-all.js",
     "client": "npm --prefix client run dev",
     "server": "npm --prefix server run dev",
     "start": "npm --prefix server start",
-    "build": "npm --prefix client run build"
+    "build": "npm --prefix client run build",
+    "test:flow": "node scripts/test-interview-audio-flow.js"
   }
 }

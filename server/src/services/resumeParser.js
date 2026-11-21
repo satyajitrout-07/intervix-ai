@@ -296,6 +296,313 @@ function parseResumeHeuristically(rawText) {
   };
 }
 
+/**
+ * Normalizes a single education item (string or object) into a validated object matching educationSchema
+ */
+function normalizeSingleEducation(item) {
+  if (!item) return null;
+
+  // Case 1: item is an Object (Format B)
+  if (typeof item === 'object' && !Array.isArray(item)) {
+    let degree = (item.degree || item.title || item.course || item.name || '').trim();
+    let branch = (item.branch || item.major || item.field || item.specialization || '').trim();
+    const institution = (item.institution || item.college || item.university || item.school || '').trim();
+    const year = String(item.year || item.graduationYear || item.passingYear || item.duration || '').trim();
+    const gpa = String(item.gpa || item.cgpa || item.grade || item.percentage || '').trim();
+
+    // If degree contains " in " and branch is empty, separate them
+    if (degree && !branch) {
+      const inMatch = degree.match(/^(.*?)\s+in\s+(.*)$/i);
+      if (inMatch) {
+        degree = inMatch[1].trim();
+        branch = inMatch[2].trim();
+      }
+    }
+
+    if (!degree && !branch && !institution && !year && !gpa) {
+      return null;
+    }
+
+    return {
+      degree,
+      branch,
+      institution,
+      year,
+      gpa,
+    };
+  }
+
+  // Case 2: item is a String (Format A)
+  if (typeof item === 'string') {
+    const raw = item.trim();
+    if (!raw) return null;
+
+    let working = raw;
+    let year = '';
+    let gpa = '';
+    let institution = '';
+    let degree = '';
+    let branch = '';
+
+    // 1. Extract GPA / CGPA if present (e.g. "CGPA: 8.5" or "GPA 3.8/4.0")
+    const gpaMatch = working.match(/(?:gpa|cgpa|grade|score)[\s:]*([0-9]+(?:\.[0-9]+)?(?:\s*\/\s*[0-9]+)?%?)/i);
+    if (gpaMatch) {
+      gpa = gpaMatch[1].trim();
+      working = working.replace(gpaMatch[0], ' ').trim();
+    }
+
+    // 2. Extract 4-digit graduation year or range (e.g. "2024" or "2020-2024")
+    const yearRangeMatch = working.match(/\b((?:19|20)\d{2}\s*(?:-|–|to)\s*(?:19|20)\d{2})\b/i);
+    if (yearRangeMatch) {
+      year = yearRangeMatch[1].trim();
+      working = working.replace(yearRangeMatch[0], ' ').trim();
+    } else {
+      const yearMatch = working.match(/\b((?:19|20)\d{2})\b/);
+      if (yearMatch) {
+        year = yearMatch[1].trim();
+        working = working.replace(yearMatch[0], ' ').trim();
+      }
+    }
+
+    // 3. Extract institution if preceded by comma, "at", or "from"
+    const instMatch = working.match(/(?:,\s*|\s+(?:at|from)\s+)([^,]+(?:university|college|institute|school|academy|polytechnic)[^,]*)/i);
+    if (instMatch) {
+      institution = instMatch[1].trim();
+      working = working.replace(instMatch[0], ' ').trim();
+    }
+
+    // Clean up trailing/leading commas or hyphens
+    working = working.replace(/^[,|\-\s]+|[,|\-\s]+$/g, '').trim();
+
+    // 4. Split degree and branch by " in " or " - "
+    const inMatch = working.match(/^(.*?)\s+in\s+(.*)$/i);
+    if (inMatch) {
+      degree = inMatch[1].trim();
+      branch = inMatch[2].trim();
+    } else {
+      const dashMatch = working.match(/^(.*?)\s*[-–]\s*(.*)$/);
+      if (dashMatch && /(?:bachelor|master|b\.tech|m\.tech|b\.e\.|b\.s\.|m\.s\.|bca|mca|b\.sc|m\.sc|diploma|phd)/i.test(dashMatch[1])) {
+        degree = dashMatch[1].trim();
+        branch = dashMatch[2].trim();
+      } else {
+        degree = working;
+      }
+    }
+
+    return {
+      degree: degree || '',
+      branch: branch || '',
+      institution: institution || '',
+      year: year || '',
+      gpa: gpa || '',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Normalizes any education input (string, object, array) into a valid Array of educationSchema objects
+ */
+function normalizeEducation(educationInput) {
+  if (!educationInput) return [];
+
+  let items = [];
+
+  if (Array.isArray(educationInput)) {
+    items = educationInput;
+  } else if (typeof educationInput === 'string') {
+    if (educationInput.includes('\n') || educationInput.includes(';')) {
+      items = educationInput.split(/[\n;]+/).map((s) => s.trim()).filter(Boolean);
+    } else {
+      items = [educationInput];
+    }
+  } else if (typeof educationInput === 'object') {
+    items = [educationInput];
+  }
+
+  const normalized = items
+    .map(normalizeSingleEducation)
+    .filter(Boolean);
+
+  return normalized;
+}
+
+/**
+ * Formats normalized education array/object/string into a single clean readable string
+ */
+function formatEducationToString(education) {
+  if (!education) return '';
+  if (typeof education === 'string') return education.trim();
+
+  const list = Array.isArray(education) ? education : [education];
+  const formatted = list
+    .map((edu) => {
+      if (!edu) return '';
+      if (typeof edu === 'string') return edu.trim();
+
+      const degree = (edu.degree || '').trim();
+      const branch = (edu.branch || '').trim();
+      const institution = (edu.institution || '').trim();
+      const year = (edu.year || '').trim();
+
+      let text = degree;
+      if (branch) {
+        if (text && !text.toLowerCase().includes(branch.toLowerCase())) {
+          text = `${text} in ${branch}`;
+        } else if (!text) {
+          text = branch;
+        }
+      }
+      if (institution) {
+        text = text ? `${text}, ${institution}` : institution;
+      }
+      if (year) {
+        text = text ? `${text} (${year})` : year;
+      }
+      return text;
+    })
+    .filter(Boolean);
+
+  return formatted.join('; ');
+}
+
+/**
+ * Normalizes all parsedData fields to guarantee strict schema compatibility with Resume Mongoose model
+ */
+function normalizeParsedData(rawParsed) {
+  if (!rawParsed || typeof rawParsed !== 'object') {
+    rawParsed = {};
+  }
+
+  // 1. Candidate Name
+  const candidateName = (
+    rawParsed.candidateName ||
+    rawParsed.name ||
+    rawParsed.personalInfo?.name ||
+    rawParsed.personalInfo?.candidateName ||
+    'Candidate'
+  ).trim();
+
+  // 2. Email & Phone
+  const email = (rawParsed.email || rawParsed.personalInfo?.email || '').trim().toLowerCase();
+  const phone = (rawParsed.phone || rawParsed.personalInfo?.phone || '').trim();
+
+  // 3. Summary
+  const summary = (rawParsed.summary || rawParsed.personalInfo?.summary || '').trim();
+
+  // 4. Experience Level
+  let estimatedExperienceLevel = 'Junior';
+  const expRaw = String(rawParsed.estimatedExperienceLevel || rawParsed.experienceLevel || '').toLowerCase();
+  if (expRaw.includes('fresh') || expRaw.includes('entry') || expRaw.includes('intern') || expRaw === '0') {
+    estimatedExperienceLevel = 'Fresher';
+  } else if (expRaw.includes('adv') || expRaw.includes('sen') || expRaw.includes('lead')) {
+    estimatedExperienceLevel = 'Advanced';
+  } else if (expRaw.includes('inter') || expRaw.includes('mid')) {
+    estimatedExperienceLevel = 'Intermediate';
+  } else if (expRaw.includes('jun') || expRaw.includes('1') || expRaw.includes('2')) {
+    estimatedExperienceLevel = 'Junior';
+  }
+
+  // 5. Years of Experience
+  let yearsOfExperience = 1;
+  if (typeof rawParsed.yearsOfExperience === 'number') {
+    yearsOfExperience = rawParsed.yearsOfExperience;
+  } else if (rawParsed.yearsOfExperience) {
+    const num = parseFloat(String(rawParsed.yearsOfExperience));
+    if (!isNaN(num)) yearsOfExperience = num;
+  }
+
+  // 6. Categorized Skills
+  const rawCat = rawParsed.categorizedSkills || rawParsed.skills || {};
+  const normalizeSkillList = (list) => {
+    if (!list) return [];
+    const arr = Array.isArray(list) ? list : typeof list === 'string' ? list.split(',') : [list];
+    return arr
+      .map((s) => {
+        if (!s) return '';
+        if (typeof s === 'string') return s.trim();
+        if (typeof s === 'object') return (s.name || s.title || s.canonical || s.label || '').trim();
+        return String(s).trim();
+      })
+      .filter(Boolean);
+  };
+
+  const categorizedSkills = {
+    frontend: normalizeSkillList(rawCat.frontend),
+    backend: normalizeSkillList(rawCat.backend),
+    database: normalizeSkillList(rawCat.database || rawCat.databases),
+    languages: normalizeSkillList(rawCat.languages || rawCat.programmingLanguages),
+    tools: normalizeSkillList(rawCat.tools || rawCat.devops),
+  };
+
+  // 7. Technical Skills & Soft Skills
+  let technicalSkills = normalizeSkillList(rawParsed.technicalSkills);
+  if (technicalSkills.length === 0) {
+    technicalSkills = [
+      ...categorizedSkills.frontend,
+      ...categorizedSkills.backend,
+      ...categorizedSkills.database,
+      ...categorizedSkills.languages,
+      ...categorizedSkills.tools,
+    ];
+  }
+  const softSkills = normalizeSkillList(rawParsed.softSkills);
+
+  // 8. Projects
+  const rawProjects = Array.isArray(rawParsed.projects) ? rawParsed.projects : [];
+  const projects = rawProjects.map((p, idx) => ({
+    title: (p.title || `Project ${idx + 1}`).trim(),
+    description: (p.description || '').trim(),
+    technologies: normalizeSkillList(p.technologies),
+    role: (p.role || 'Developer').trim(),
+    duration: (p.duration || '').trim(),
+    suggestedTopics: normalizeSkillList(p.suggestedTopics),
+  }));
+
+  // 9. Experience
+  let experience = [];
+  if (Array.isArray(rawParsed.experience)) {
+    experience = rawParsed.experience.map((e) => ({
+      role: (e.role || e.title || e.position || '').trim(),
+      company: (e.company || e.organization || e.employer || '').trim(),
+      duration: (e.duration || e.period || e.years || '').trim(),
+      responsibilities: normalizeSkillList(e.responsibilities || e.description),
+    }));
+  } else if (typeof rawParsed.experience === 'string' && rawParsed.experience.trim()) {
+    experience = [
+      {
+        role: 'Software Developer',
+        company: rawParsed.experience.trim(),
+        duration: '',
+        responsibilities: [],
+      },
+    ];
+  }
+
+  // 10. Education (Uses normalizeEducation to guarantee [educationSchema] structure)
+  const education = normalizeEducation(rawParsed.education);
+
+  // 11. Certifications
+  const certifications = normalizeSkillList(rawParsed.certifications);
+
+  return {
+    candidateName,
+    email,
+    phone,
+    summary,
+    estimatedExperienceLevel,
+    yearsOfExperience,
+    categorizedSkills,
+    technicalSkills,
+    softSkills,
+    projects,
+    experience,
+    education,
+    certifications,
+  };
+}
+
 async function parseResume(buffer, fileType) {
   const rawText = await extractRawText(buffer, fileType);
   if (!rawText || rawText.trim().length < 40) {
@@ -303,10 +610,11 @@ async function parseResume(buffer, fileType) {
   }
 
   const parsed = parseResumeHeuristically(rawText);
+  const normalized = normalizeParsedData(parsed);
 
   return {
     rawText,
-    parsedData: parsed,
+    parsedData: normalized,
   };
 }
 
@@ -405,6 +713,9 @@ module.exports = {
   parseResume,
   sanitizeResumeText,
   generatePreviewQuestions,
+  normalizeEducation,
+  formatEducationToString,
+  normalizeParsedData,
   TECH_DICTIONARY,
   SOFT_SKILLS_DICTIONARY,
 };

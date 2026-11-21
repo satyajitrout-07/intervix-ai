@@ -18,6 +18,7 @@ const experienceSchema = new mongoose.Schema({
 
 const educationSchema = new mongoose.Schema({
   degree: { type: String, default: '' },
+  branch: { type: String, default: '' },
   institution: { type: String, default: '' },
   year: { type: String, default: '' },
   gpa: { type: String, default: '' },

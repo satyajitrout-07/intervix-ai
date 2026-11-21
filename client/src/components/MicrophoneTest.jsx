@@ -32,6 +32,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
   const mediaRecorderRef = useRef(null);
   const testChunksRef = useRef([]);
   const countdownTimerRef = useRef(null);
+  const testAudioUrlRef = useRef(null); // Track URL for cleanup
 
   // Check secure context on mount
   useEffect(() => {
@@ -42,6 +43,22 @@ export default function MicrophoneTest({ onReady, className = '' }) {
       );
     }
   }, []);
+
+  // Cleanup on unmount — revoke object URLs to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      stopAllAudio();
+      if (testAudioUrlRef.current) {
+        URL.revokeObjectURL(testAudioUrlRef.current);
+        testAudioUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  // Keep ref in sync whenever URL changes so cleanup always gets the latest URL
+  useEffect(() => {
+    testAudioUrlRef.current = testAudioUrl;
+  }, [testAudioUrl]);
 
   // Request & Initialize Microphone
   const requestMicrophoneAccess = async (deviceIdToUse = null) => {
@@ -61,7 +78,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
         autoGainControl: true,
       };
 
-      const devId = deviceIdToUse || selectedDeviceId;
+      const devId = deviceIdToUse !== null ? deviceIdToUse : selectedDeviceId;
       if (devId) {
         audioConstraints.deviceId = { exact: devId };
       }
@@ -94,7 +111,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
         console.warn('[Device Enumeration Notice]:', enumErr);
       }
 
-      // Initialize Web Audio API Analyser for Live Level Meter
+      // Initialize Web Audio API Level Meter
       initAudioMeter(stream);
 
       if (onReady) {
@@ -105,7 +122,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setPermissionStatus('denied');
         setErrorMessage(
-          'Microphone permission was denied. Please allow microphone access in your browser settings (click the lock or camera icon in the URL bar).'
+          'Microphone permission was denied. Please allow microphone access in your browser settings (click the lock icon in the URL bar).'
         );
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         setPermissionStatus('not_found');
@@ -118,6 +135,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
         setSelectedDeviceId('');
         localStorage.removeItem('intervix_mic_device_id');
         requestMicrophoneAccess('');
+        return;
       } else {
         setPermissionStatus('denied');
         setErrorMessage(err.message || 'Unable to access microphone.');
@@ -179,11 +197,16 @@ export default function MicrophoneTest({ onReady, className = '' }) {
       return;
     }
 
+    // Revoke previous test URL
+    if (testAudioUrlRef.current) {
+      URL.revokeObjectURL(testAudioUrlRef.current);
+      testAudioUrlRef.current = null;
+    }
+
     setTestAudioUrl(null);
     setTestAudioSize(0);
     testChunksRef.current = [];
 
-    // Check supported MIME type
     const mimeTypes = [
       'audio/webm;codecs=opus',
       'audio/webm',
@@ -217,6 +240,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
         setTestAudioSize(audioBlob.size);
         if (audioBlob.size > 0) {
           const url = URL.createObjectURL(audioBlob);
+          testAudioUrlRef.current = url;
           setTestAudioUrl(url);
         }
         setIsRecordingTest(false);
@@ -247,6 +271,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
   const stopRecordingTest = () => {
     if (countdownTimerRef.current) {
       clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       try {
@@ -259,12 +284,13 @@ export default function MicrophoneTest({ onReady, className = '' }) {
   const stopAllAudio = () => {
     if (countdownTimerRef.current) {
       clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop();
       } catch {}
@@ -274,6 +300,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
         audioContextRef.current.close();
       } catch {}
       audioContextRef.current = null;
+      analyserRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -289,16 +316,6 @@ export default function MicrophoneTest({ onReady, className = '' }) {
     localStorage.setItem('intervix_mic_device_id', newId);
     requestMicrophoneAccess(newId);
   };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopAllAudio();
-      if (testAudioUrl) {
-        URL.revokeObjectURL(testAudioUrl);
-      }
-    };
-  }, []);
 
   return (
     <div className={`p-5 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-4 shadow-xl ${className}`}>
@@ -320,7 +337,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
               <CheckCircle2 className="w-3.5 h-3.5" /> Mic Ready
             </span>
-          ) : permissionStatus === 'denied' ? (
+          ) : permissionStatus === 'denied' || permissionStatus === 'not_found' ? (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-950/80 border border-red-500/30 text-red-300 text-xs font-semibold">
               <MicOff className="w-3.5 h-3.5" /> Blocked
             </span>
@@ -401,7 +418,9 @@ export default function MicrophoneTest({ onReady, className = '' }) {
           />
         </div>
         <p className="text-[10px] text-slate-500 italic">
-          Speak a few words into your microphone. The green volume bar should move when you speak.
+          {permissionStatus === 'granted'
+            ? 'Speak a few words — the green bar should move when you speak.'
+            : 'Click Allow & Test to request microphone permission first.'}
         </p>
       </div>
 
@@ -436,6 +455,7 @@ export default function MicrophoneTest({ onReady, className = '' }) {
             <span className="text-[10px] font-mono text-emerald-400">
               Captured: {(testAudioSize / 1024).toFixed(1)} KB
             </span>
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <audio controls src={testAudioUrl} className="h-8 max-w-[200px]" />
           </div>
         )}
