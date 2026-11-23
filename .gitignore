@@ -34,3 +34,17 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+
+
+node_modules/
+client/node_modules/
+server/node_modules/
+
+.env
+.env.*
+!.env.example
+
+dist/
+build/
+*.log
