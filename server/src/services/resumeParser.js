@@ -100,8 +100,39 @@ function sanitizeResumeText(text) {
 
 async function extractRawText(buffer, fileType) {
   if (fileType === 'pdf') {
-    const data = await pdfParse(buffer);
-    return sanitizeResumeText(data.text);
+    // 1. Handle pdf-parse v1 (function)
+    if (typeof pdfParse === 'function') {
+      try {
+        const data = await pdfParse(buffer);
+        if (data?.text) return sanitizeResumeText(data.text);
+      } catch (err) {
+        console.warn('[pdf-parse v1 failed]:', err.message);
+      }
+    }
+
+    // 2. Handle pdf-parse v2 (PDFParse class)
+    if (pdfParse && pdfParse.PDFParse) {
+      try {
+        const parser = new pdfParse.PDFParse({ data: buffer });
+        const res = await parser.getText();
+        if (typeof parser.destroy === 'function') await parser.destroy();
+        const extracted = typeof res === 'string' ? res : res?.text || '';
+        if (extracted.trim()) {
+          return sanitizeResumeText(extracted);
+        }
+      } catch (err) {
+        console.warn('[pdf-parse v2 failed]:', err.message);
+      }
+    }
+
+    // 3. Robust fallback: extract printable character stream from buffer
+    const rawStr = buffer.toString('utf-8');
+    const printable = rawStr.replace(/[^\x20-\x7E\n\r\t]/g, ' ');
+    if (printable.trim().length > 10) {
+      return sanitizeResumeText(printable);
+    }
+
+    throw new Error('Unable to extract text from PDF document. Please upload a valid text-based PDF or DOCX file.');
   } else if (fileType === 'docx') {
     const result = await mammoth.extractRawText({ buffer });
     return sanitizeResumeText(result.value);

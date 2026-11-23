@@ -27,21 +27,21 @@ const register = async (req, res) => {
 
     const { name, email, password } = req.body || {};
 
-    if (!name || !name.trim()) {
+    if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({
         success: false,
         message: 'Full name is required.',
       });
     }
 
-    if (!email || !email.trim()) {
+    if (!email || typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({
         success: false,
-        message: 'Email address is required.',
+        message: 'Valid email address is required.',
       });
     }
 
-    if (!password || password.length < 6) {
+    if (!password || typeof password !== 'string' || password.length < 6) {
       return res.status(400).json({
         success: false,
         message: 'Password must be at least 6 characters long.',
@@ -105,10 +105,10 @@ const login = async (req, res) => {
 
     const { email, password } = req.body || {};
 
-    if (!email || !email.trim() || !password) {
+    if (!email || typeof email !== 'string' || !email.trim() || !password || typeof password !== 'string') {
       return res.status(400).json({
         success: false,
-        message: 'Please provide both email and password.',
+        message: 'Please provide both valid email and password.',
       });
     }
 

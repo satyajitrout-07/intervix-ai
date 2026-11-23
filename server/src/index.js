@@ -79,6 +79,16 @@ app.get('/api/health', (req, res) => {
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
   const hasOpenAIKey = Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim());
 
+  let activeProvider = 'built-in semantic evaluator';
+  let activeModel = 'rubric-engine-v2';
+  if (hasGeminiKey) {
+    activeProvider = 'Google Gemini';
+    activeModel = 'gemini-1.5-flash';
+  } else if (hasOpenAIKey) {
+    activeProvider = 'OpenAI';
+    activeModel = 'gpt-4o-mini';
+  }
+
   return res.status(200).json({
     status: 'healthy',
     service: 'INTERVIX AI Backend Engine',
@@ -91,10 +101,14 @@ app.get('/api/health', (req, res) => {
     llmIntegration: {
       geminiConfigured: hasGeminiKey,
       openAiConfigured: hasOpenAIKey,
+      provider: activeProvider,
+      model: activeModel,
       mode: hasGeminiKey || hasOpenAIKey ? 'live_generative_llm' : 'curated_industry_evaluator',
-      note: hasGeminiKey || hasOpenAIKey
-        ? 'Active LLM API ready.'
-        : 'To enable dynamic live Gemini generation, add GEMINI_API_KEY to server/.env',
+      note: hasGeminiKey
+        ? 'Google Gemini API is configured and ready for live question generation and answer evaluation.'
+        : hasOpenAIKey
+        ? 'OpenAI API is configured and ready for live generation.'
+        : 'To enable dynamic live Gemini generation, add your GEMINI_API_KEY in server/.env',
     },
   });
 });
@@ -120,13 +134,16 @@ app.use((err, req, res, next) => {
 });
 
 // 12. Start Express Server
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n======================================================`);
-  console.log(`🚀 INTERVIX AI Server running at http://localhost:${PORT}`);
-  console.log(`📡 Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`🔒 Security headers, NoSQL filter & rate limits active.`);
-  console.log(`======================================================\n`);
-});
+let server = null;
+if (require.main === module || !process.env.TEST_RUNNER) {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n======================================================`);
+    console.log(`🚀 INTERVIX AI Server running at http://localhost:${PORT}`);
+    console.log(`📡 Health Check: http://localhost:${PORT}/api/health`);
+    console.log(`🔒 Security headers, NoSQL filter & rate limits active.`);
+    console.log(`======================================================\n`);
+  });
+}
 
 // 13. Graceful Shutdown
 function gracefulShutdown(signal) {

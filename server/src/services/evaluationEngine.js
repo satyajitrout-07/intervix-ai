@@ -681,6 +681,7 @@ const SEMANTIC_TOPIC_SYNONYMS = {
   coercion: ['coercion', 'type conversion', 'converted', 'implicit', 'automatic conversion', 'typecast', 'coerced'],
   strict_equality: ['strict', 'both type and value', 'type and value', 'without conversion', 'triple equals', 'identical type'],
   closure: ['closure', 'lexical scope', 'outer function', 'inner function', 'retains access', 'persists', 'data privacy', 'encapsulation', 'variable retention'],
+  this_binding: ['this', 'invocation', 'invoked', 'invoke', 'call', 'apply', 'bind', 'lexical', 'enclosing', 'arrow function', 'execution context', 'caller'],
   event_loop: ['event loop', 'call stack', 'microtask', 'macrotask', 'task queue', 'callback queue', 'non-blocking', 'single thread', 'asynchronous'],
   virtual_dom: ['virtual dom', 'vdom', 'in-memory', 'tree', 'reconciliation', 'diff', 'diffing', 'minimal dom updates', 'batching'],
   react_hooks: ['hooks', 'top level', 'state', 'useeffect', 'usestate', 'fiber', 'call order', 'lifecycle', 're-render'],
@@ -750,8 +751,15 @@ function evaluateAnswerStrictly({
     const conceptLower = concept.toLowerCase();
     const conceptTokens = conceptLower.split(/\s+/).filter((w) => w.length > 2);
 
-    // Direct token match
-    let hasMatch = conceptTokens.some((token) => lowerAnswer.includes(token));
+    // Direct token match and stem matching
+    let hasMatch = conceptTokens.some((token) => {
+      if (lowerAnswer.includes(token)) return true;
+      if (token.length > 5) {
+        const stem = token.slice(0, token.length - 2);
+        return lowerAnswer.includes(stem);
+      }
+      return false;
+    });
 
     // Synonym cluster match
     if (!hasMatch) {

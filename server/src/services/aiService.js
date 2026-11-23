@@ -10,53 +10,108 @@ const {
   getDynamicQuestion,
 } = require('./evaluationEngine');
 
-// Helper to call Google Gemini API with JSON response enforcement
+// Robust JSON cleaner to parse responses even if model wraps in markdown code fences or comments
+function extractJsonFromText(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+  let cleaned = rawText.trim();
+
+  // Strip markdown code fences if present
+  if (cleaned.startsWith('```json')) {
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+
+  // Find outermost JSON object
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.warn('[JSON Parse Error on LLM Output]:', err.message);
+    return null;
+  }
+}
+
+// Supported Google Gemini models in priority order
+const GEMINI_MODELS = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+
+// Helper to call Google Gemini API with fallback, JSON enforcement and rate limit backoff
 async function callGemini(prompt, systemInstruction = '') {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || !apiKey.trim()) {
     return null;
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey.trim()}`;
+  const cleanKey = apiKey.trim();
 
-  const payload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: prompt }],
+  // Iterate over models to handle transient outages or model-specific rate limits
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanKey}`;
+
+    const payload = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.3,
+        topP: 0.9,
+        responseMimeType: 'application/json',
       },
-    ],
-    generationConfig: {
-      temperature: 0.3,
-      topP: 0.9,
-      responseMimeType: 'application/json',
-    },
-  };
-
-  if (systemInstruction) {
-    payload.systemInstruction = {
-      parts: [{ text: systemInstruction }],
     };
+
+    if (systemInstruction) {
+      payload.systemInstruction = {
+        parts: [{ text: systemInstruction }],
+      };
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      // Handle Rate Limiting (429) or Service Unavailable (503)
+      if (response.status === 429 || response.status === 503) {
+        console.warn(`[Gemini API ${model} rate-limited/busy (${response.status})]. Trying fallback model...`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn(`[Gemini API Error with ${model} - Status ${response.status}]: ${errorText.slice(0, 150)}`);
+        continue;
+      }
+
+      const data = await response.json();
+      const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textOutput) {
+        continue;
+      }
+
+      const parsed = extractJsonFromText(textOutput);
+      if (parsed) {
+        return {
+          ...parsed,
+          _modelUsed: model,
+          _provider: 'gemini',
+        };
+      }
+    } catch (reqErr) {
+      console.warn(`[Gemini Fetch Error with ${model}]:`, reqErr.message);
+    }
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API Error [${response.status}]: ${errorText}`);
-  }
-
-  const data = await response.json();
-  const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!textOutput) {
-    throw new Error('Empty response received from Gemini API');
-  }
-
-  return JSON.parse(textOutput);
+  return null;
 }
 
 // Helper to call OpenAI API with JSON response enforcement
