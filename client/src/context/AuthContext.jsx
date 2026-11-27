@@ -3,6 +3,21 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 const AuthContext = createContext(null);
 
 /**
+ * Resolves an API endpoint to the correct URL (Render deployed or local proxy)
+ */
+export function buildApiUrl(endpoint) {
+  if (!endpoint) return '';
+  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+    return endpoint;
+  }
+  // In development, Vite proxy handles /api seamlessly.
+  // In production builds (Vercel, Netlify, Render), prefix with VITE_API_URL if defined.
+  const baseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+  const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return baseUrl ? `${baseUrl}${cleanPath}` : cleanPath;
+}
+
+/**
  * Safely parses API responses to prevent "Unexpected end of JSON input" errors.
  * Handles empty bodies, proxy timeouts, non-JSON text, and HTTP error responses.
  */
@@ -31,7 +46,7 @@ async function parseResponseSafely(res, defaultErrorMessage = 'Request failed.')
 
   // Handle server proxy or gateway errors gracefully
   if (res.status === 502 || res.status === 503 || res.status === 504) {
-    throw new Error('INTERVIX AI backend server is currently offline or unreachable on port 5000. Please start the backend service.');
+    throw new Error('INTERVIX AI backend server is currently waking up or unreachable. Please wait a few moments and try again.');
   }
 
   if (!res.ok) {
@@ -79,7 +94,7 @@ export function AuthProvider({ children }) {
       }
 
       try {
-        const res = await fetch('/api/auth/me', {
+        const res = await fetch(buildApiUrl('/api/auth/me'), {
           headers: {
             Authorization: `Bearer ${storedToken}`,
           },
@@ -120,7 +135,7 @@ export function AuthProvider({ children }) {
 
     let res;
     try {
-      res = await fetch('/api/auth/login', {
+      res = await fetch(buildApiUrl('/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -133,7 +148,7 @@ export function AuthProvider({ children }) {
       });
     } catch (networkErr) {
       console.error('[Login Network Error]:', networkErr);
-      throw new Error('Unable to reach INTERVIX AI server. Please verify the backend is running on port 5000.');
+      throw new Error('Unable to reach INTERVIX AI server. If the backend is on Render, it may be waking up from sleep mode (~30s). Please try again.');
     }
 
     const data = await parseResponseSafely(res, 'Login failed. Please check your credentials.');
@@ -162,7 +177,7 @@ export function AuthProvider({ children }) {
 
     let res;
     try {
-      res = await fetch('/api/auth/register', {
+      res = await fetch(buildApiUrl('/api/auth/register'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -176,7 +191,7 @@ export function AuthProvider({ children }) {
       });
     } catch (networkErr) {
       console.error('[Register Network Error]:', networkErr);
-      throw new Error('Unable to reach INTERVIX AI server. Please verify the backend is running on port 5000.');
+      throw new Error('Unable to reach INTERVIX AI server. If the backend is on Render, it may be waking up from sleep mode (~30s). Please try again.');
     }
 
     const data = await parseResponseSafely(res, 'Registration failed.');
@@ -233,13 +248,13 @@ export function AuthProvider({ children }) {
 
     let response;
     try {
-      response = await fetch(url, {
+      response = await fetch(buildApiUrl(url), {
         ...options,
         headers,
       });
     } catch (netErr) {
       console.error('[authFetch Network Failure]:', netErr);
-      throw new Error('Network connection error: Unable to reach backend server.');
+      throw new Error('Network connection error: Unable to reach backend server. If using Render, please wait ~30s for wake-up.');
     }
 
     if (response.status === 401) {

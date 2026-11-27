@@ -22,7 +22,7 @@ connectDB();
 // 1. Security HTTP Headers
 app.use(securityHeaders);
 
-// 2. CORS configuration (allows frontend on localhost / 127.0.0.1 or configured CLIENT_URL)
+// 2. CORS configuration (allows frontend on localhost / 127.0.0.1, Render, Vercel, Netlify, or configured CLIENT_URL)
 const allowedOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -32,10 +32,21 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl) or matching whitelist
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow requests with no origin (like mobile apps, curl, or server-to-server)
+      if (!origin) return callback(null, true);
+
+      // Explicit whitelist match
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      // Cloud deployment platforms match (*.onrender.com, *.vercel.app, *.netlify.app)
+      if (
+        origin.endsWith('.onrender.com') ||
+        origin.endsWith('.vercel.app') ||
+        origin.endsWith('.netlify.app')
+      ) {
         return callback(null, true);
       }
+
       return callback(new Error('CORS policy: Not an authorized origin.'));
     },
     credentials: true,
