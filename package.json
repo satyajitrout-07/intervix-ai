@@ -10,6 +10,7 @@
     "server": "npm --prefix server run dev",
     "start": "npm --prefix server start",
     "build": "npm --prefix client run build",
+    "build:render": "npm install --prefix server && npm install --prefix client && npm --prefix client run build",
     "test:flow": "node scripts/test-interview-audio-flow.js"
   }
 }
